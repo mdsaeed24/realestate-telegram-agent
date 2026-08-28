@@ -50,7 +50,7 @@ without media is normal behaviour (text details + "photos aren't up for this one
 | Media delivery | First send passes the public Supabase URL; cache the returned `file_id`; on a stale-identifier failure, re-send by URL and overwrite the cache. |
 | Gallery | Hero alone first. On consent, the remaining three go as one media group. |
 | Sheet tabs | Properties, Leads, Bookings. |
-| Model | `claude-sonnet-5`. |
+| Model | **Deferred — you will name it.** Held in one place (`ANTHROPIC_MODEL` in config) so switching is a config change, not a code change. See Phase 5. |
 
 ---
 
@@ -193,11 +193,23 @@ FastAPI app, secret-token check, immediate 200 ack, background processing, `proc
 **Verify:** end-to-end in a real Telegram chat from a seeded deep link; `leads_state` shows populated slots; the "no" path leaves `opted_out = true`.
 
 ### Phase 5 — LLM layer
-`claude-sonnet-5`, adaptive thinking, structured outputs for extraction. Language detected once and
-held. Note for implementation: Sonnet 5 rejects assistant prefill and does not support
-mid-conversation system messages — put operator context in the top-level `system` field, and cache
-that prefix.
-**Env added:** `ANTHROPIC_API_KEY`.
+Adaptive thinking, structured outputs for extraction. Language detected once and held.
+
+**Model is deferred.** The id lives in `ANTHROPIC_MODEL` (env, read once in `app/config.py`) and is
+referenced nowhere else, so naming it later is a one-line change. Until you choose, write the calling
+code against the baseline that holds across every current Claude model, so no rewrite is needed:
+
+- **No assistant prefill.** Removed across the current family — control output shape with
+  `output_config.format` or the system prompt, never a prefilled assistant turn.
+- **Operator context goes in the top-level `system` field**, cached. Mid-conversation `role: "system"`
+  messages exist only on some models; avoiding them keeps the code portable.
+- **`thinking: {"type": "adaptive"}`**, with depth tuned via `output_config.effort` rather than
+  `budget_tokens` (removed on current models).
+
+The one thing that genuinely varies by choice is cost per turn, which matters here because every
+inbound message costs two calls (extract + compose). Worth weighing when you pick.
+
+**Env added:** `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`.
 **Verify:** `pytest tests/test_extract.py` over a fixture set of Hindi / Kannada / Tamil / Konkani / Hinglish messages; a code-mixed message must not flip the stored language.
 
 ### Phase 6 — Matching + listing
