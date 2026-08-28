@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-Standing rules for this project. For the product spec, lead qualification flow, property data model, and conversation design, see **projectbrief.md** — read it before starting work in a new session.
+Standing rules for this project. For the product spec, lead qualification flow, property data model, and conversation design, see **project_brief.md** — read it before starting work in a new session.
 
 ## What This Is
 
-A Telegram agent that handles lead enquiries for a real estate firm in Gurgaon. Leads live in Google Sheets. The agent messages a lead, qualifies them on property type, budget, and location, shows matching properties, sends photos/video for a chosen property, understands multiple languages, and sends a reminder when a site visit is booked.
+A Telegram agent that handles lead enquiries for a real estate firm in Bengaluru. Leads live in Google Sheets. The agent messages a lead, qualifies them on property type, budget, and location, shows matching properties, sends photos/video for a chosen property, understands multiple languages, and sends a reminder when a site visit is booked.
 
 ## Architecture Rule (Non-Negotiable)
 
