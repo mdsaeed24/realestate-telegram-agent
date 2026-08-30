@@ -6,3 +6,7 @@ __pycache__/
 *.log
 credentials.json
 credentials.txt
+
+# Local backups of secret files
+.env.*
+!.env.example

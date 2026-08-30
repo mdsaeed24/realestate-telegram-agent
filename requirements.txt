@@ -1,2 +1,9 @@
 python-dotenv
 pytest
+
+# Phase 2 - Google Sheets
+google-api-python-client
+google-auth
+
+# Phase 2 - HTTP client (also used for the Telegram API from Phase 3)
+httpx
