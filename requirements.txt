@@ -7,3 +7,8 @@ google-auth
 
 # Phase 2 - HTTP client (also used for the Telegram API from Phase 3)
 httpx
+
+# Phase 3 - webhook server
+fastapi
+uvicorn
+pytest-asyncio
