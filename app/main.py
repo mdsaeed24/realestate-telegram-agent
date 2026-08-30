@@ -15,6 +15,10 @@ from app.store.client import Store
 from app.store.updates import claim
 from app.telegram.client import Telegram
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+)
 log = logging.getLogger("agent")
 
 @asynccontextmanager
