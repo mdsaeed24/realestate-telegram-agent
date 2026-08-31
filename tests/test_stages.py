@@ -207,3 +207,48 @@ def test_slot_given_outside_booking_stage_still_books():
                          CATALOG, CATALOG)
     assert plan.stage == stages.CONFIRMED
     assert plan.booking_slot_text == "Saturday 11am"
+
+
+# --- regressions from the live Telegram run -------------------------------
+
+def test_thanks_after_booking_does_not_repitch():
+    """The bug you saw: every message after a confirmed booking re-listed the
+    same properties, so it looked like nothing had been recorded."""
+    state = State(stage=stages.CONFIRMED, slots=QUALIFIED, selected_property_id="PROP-001")
+    plan = stages.decide(state, ex("other"), CATALOG, CATALOG)
+    assert plan.stage == stages.CONFIRMED, "must not fall back to LISTED"
+    assert not plan.shown, "must not re-list properties"
+    assert "booked" in plan.facts.lower()
+
+
+def test_small_talk_after_booking_stays_brief():
+    state = State(stage=stages.CONFIRMED, slots=QUALIFIED, selected_property_id="PROP-001")
+    plan = stages.decide(state, ex("still_looking"), CATALOG, CATALOG)
+    assert not plan.shown
+    assert "do not" in plan.instruction.lower()
+
+
+def test_question_after_booking_is_answered_not_pitched():
+    state = State(stage=stages.CONFIRMED, slots=QUALIFIED, selected_property_id="PROP-001")
+    plan = stages.decide(state, ex("asked_question", question="is parking included?"),
+                         CATALOG, CATALOG)
+    assert not plan.shown
+    assert "Answer their question" in plan.instruction
+
+
+def test_chitchat_while_listed_does_not_relist():
+    """Re-showing the same list on every stray message is the broadcast
+    behaviour the brief forbids."""
+    state = State(stage=stages.LISTED, slots=QUALIFIED)
+    plan = stages.decide(state, ex("other"), CATALOG, CATALOG)
+    assert not plan.shown
+
+
+def test_new_requirements_still_produce_a_fresh_list():
+    """The fix must not block a genuine re-search."""
+    state = State(stage=stages.LISTED, slots=QUALIFIED)
+    plan = stages.decide(state, ex("gave_requirements", property_type="2BHK",
+                                   budget=14_000_000, area="Varthur"),
+                         CATALOG, CATALOG)
+    assert plan.stage == stages.LISTED
+    assert plan.shown, "changing requirements must still re-search"

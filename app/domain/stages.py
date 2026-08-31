@@ -190,6 +190,13 @@ def decide(state, ex, properties: list[Property], shown: list[Property]) -> Plan
             facts="",
         )
 
+    # Past qualification, ordinary conversation must not re-trigger a listing.
+    # Falling through to the matcher on every message re-pitched the same
+    # properties after a booking was already confirmed.
+    if state.stage in (LISTED, PROPERTY_SELECTED, MEDIA_OFFERED, CONFIRMED) and \
+            ex.intent in ("asked_question", "other", "still_looking"):
+        return _followup(state, ex, properties)
+
     # Qualification.
     if not merged.qualified:
         missing = _missing_slots(merged)
@@ -240,6 +247,47 @@ def decide(state, ex, properties: list[Property], shown: list[Property]) -> Plan
             "Do not push and do not repeat the pitch."
         ),
         facts=matching.numbered_list(result.alternatives),
+    )
+
+
+def _followup(state, ex, properties: list[Property]) -> Plan:
+    """Answer what was said without re-pitching. The brief is explicit: never
+    repeat a pitch, and never behave like a broadcast."""
+    prop = _by_id(properties, state.selected_property_id or "")
+
+    if state.stage == CONFIRMED:
+        facts = "Their site visit is already booked and recorded."
+        if prop:
+            facts += f"\nProperty: {prop.name}\nMaps link: {prop.maps_url}"
+        if ex.question:
+            return Plan(
+                stage=CONFIRMED,
+                instruction=("Answer their question using only the facts below. If the "
+                             "answer is not there, say you will check and come back. Do "
+                             "NOT list properties again and do not repeat the pitch."),
+                facts=facts + (f"\n{_property_facts(prop)}" if prop else ""),
+            )
+        return Plan(
+            stage=CONFIRMED,
+            instruction=("Reply briefly and warmly to what they said - one or two lines. "
+                         "Their visit is booked, so there is nothing to sell. Do NOT list "
+                         "properties and do NOT repeat any details unless asked."),
+            facts=facts,
+        )
+
+    if ex.question:
+        return Plan(
+            stage=state.stage,
+            instruction=("Answer their question using only the facts below. If it is not "
+                         "there, say you will find out. Do not re-list properties."),
+            facts=_property_facts(prop) if prop else "",
+        )
+
+    return Plan(
+        stage=state.stage,
+        instruction=("Reply briefly to what they said - one or two lines. Do not re-list "
+                     "properties and do not repeat the pitch."),
+        facts=_property_facts(prop) if prop else "",
     )
 
 

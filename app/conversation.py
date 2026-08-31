@@ -178,9 +178,12 @@ async def _record_booking(ctx, st, properties, slot_text: str) -> str:
         return ""
 
     booking_id = f"BK-{uuid.uuid4().hex[:8].upper()}"
+    # Store the lead's own wording. slot_start stays null until we can genuinely
+    # parse a datetime - filling it with now() made the record look scheduled
+    # when it was not.
     await ctx.store.insert("bookings", {
         "lead_id": st.lead_id, "property_id": prop.property_id,
-        "slot_start": _now(), "status": "confirmed",
+        "slot_text": slot_text, "status": "confirmed",
     })
     lead = await sheet_leads.by_id(ctx.sheets, st.lead_id)
     await sheet_bookings.append(
