@@ -12,3 +12,6 @@ httpx
 fastapi
 uvicorn
 pytest-asyncio
+
+# Phase 5 - LLM
+anthropic
