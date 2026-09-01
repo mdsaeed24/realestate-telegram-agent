@@ -79,3 +79,31 @@ def format_inr(amount: int) -> str:
         text = f"{value:.2f}".rstrip("0").rstrip(".")
         return f"Rs {text} lakh"
     return f"Rs {amount:,}"
+
+
+_PHONE_RE = re.compile(r"(?:\+?91[\s-]?)?([6-9]\d{9})\b")
+
+
+def parse_phone(text: str) -> str | None:
+    """Extract an Indian mobile number, normalised to +91XXXXXXXXXX.
+
+    Indian mobiles are 10 digits starting 6-9. Accepts the common written forms
+    (+91, 0 prefix, spaces, hyphens) and rejects anything that is not a real
+    mobile, so a budget figure never gets stored as a phone number.
+    """
+    if not text:
+        return None
+    cleaned = re.sub(r"[^\d+]", "", text)
+    m = re.search(r"(?:\+?91)?([6-9]\d{9})$", cleaned) or _PHONE_RE.search(text)
+    if m:
+        return f"+91{m.group(1)}"
+    return None
+
+
+def looks_like_name(text: str) -> bool:
+    """A loose check that a reply is plausibly a person's name."""
+    t = (text or "").strip()
+    if not (2 <= len(t) <= 60):
+        return False
+    parts = [p for p in t.replace(".", " ").split() if p]
+    return bool(parts) and all(p.isalpha() for p in parts)

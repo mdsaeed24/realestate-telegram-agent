@@ -79,6 +79,38 @@ async def start(ctx, chat_id: int, token: str) -> None:
     await ctx.store.patch("deep_link_tokens", {"token": f"eq.{token}"}, {"used_at": _now()})
 
 
+async def _new_lead(ctx, chat_id: int, source: str) -> "state_store.LeadState":
+    """Mint a lead for someone we have never seen, and put them in the sheet so
+    the client can see them."""
+    lead_id = f"LEAD-{uuid.uuid4().hex[:6].upper()}"
+
+    # chat_id is unique: release it from whatever lead held it, so the old lead's
+    # history stays intact but this chat no longer resolves to them.
+    await ctx.store.patch("leads_state", {"chat_id": f"eq.{chat_id}"}, {"chat_id": None})
+
+    st = state_store.LeadState(lead_id=lead_id, chat_id=chat_id,
+                               stage=stages.IDENTIFYING, last_inbound_at=_now())
+    await state_store.upsert(ctx.store, st)
+    await sheet_leads.append(ctx.sheets, sheet_leads.Lead(
+        lead_id=lead_id, name="", phone="", source=source,
+        enquired_about="", status="new", deep_link="",
+    ))
+    log.info("created lead %s from %s", lead_id, source)
+    return st
+
+
+async def _capture_contact(ctx, st, plan) -> None:
+    """Persist a name/number the person gave us, to Supabase and the sheet."""
+    if plan.capture_name:
+        st.slots["captured_name"] = plan.capture_name
+    if plan.capture_phone:
+        st.slots["captured_phone"] = plan.capture_phone
+    if plan.capture_name and plan.capture_phone:
+        await sheet_leads.update_contact(
+            ctx.sheets, st.lead_id, plan.capture_name, plan.capture_phone)
+        log.info("captured contact for %s", st.lead_id)
+
+
 def _slot_facts(st, name: str) -> str:
     from app.domain.slots import format_inr
     bits = [f"Lead's name: {name}"]
@@ -95,8 +127,17 @@ async def message(ctx, chat_id: int, text: str, telegram_message_id: int | None)
     """Handle an ordinary inbound message."""
     st = await state_store.by_chat_id(ctx.store, chat_id)
     if st is None:
-        await ctx.telegram.send_message(
-            chat_id, "Please start with the link we sent you so I can find your enquiry.")
+        # Someone who found the bot without a deep link. Identify them rather
+        # than dead-ending - they are a lead too, just not one we knew about.
+        st = await _new_lead(ctx, chat_id, source="telegram-direct")
+        text = await composer.compose(
+            ctx.llm, ctx.settings, language="en",
+            instruction=("Greet them warmly as a new enquiry, say you can help them find a "
+                         "property, and ask for their name and mobile number to get "
+                         "started. One short message."),
+            facts="",
+        )
+        await _send_and_log(ctx, chat_id, st.lead_id, text)
         return
     if st.opted_out:
         log.info("lead %s opted out, ignoring inbound", st.lead_id)
@@ -132,7 +173,15 @@ async def message(ctx, chat_id: int, text: str, telegram_message_id: int | None)
 
     # Apply the plan's state changes before sending, so a crash mid-send cannot
     # leave us re-sending media the lead already has.
+    if plan.new_lead:
+        # Detach from the lead named in the deep link so nothing further is
+        # recorded against them, and start a fresh lead for whoever this is.
+        log.info("chat %s is not lead %s - creating a new lead", chat_id, st.lead_id)
+        st = await _new_lead(ctx, chat_id, source="wrong-recipient")
+        await state_store.upsert(ctx.store, st)
+
     st.stage = plan.stage
+    await _capture_contact(ctx, st, plan)
     for key, value in (("property_type", ex.property_type), ("budget", ex.budget),
                        ("area", ex.area)):
         if value:

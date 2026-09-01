@@ -56,3 +56,12 @@ class Sheets:
 
     async def append(self, tab: str, row: list) -> None:
         await asyncio.to_thread(self._append_sync, tab, row)
+
+    def _update_sync(self, rng: str, values: list[list]) -> None:
+        _service(self._path).spreadsheets().values().update(
+            spreadsheetId=self._sheet_id, range=rng,
+            valueInputOption="RAW", body={"values": values},
+        ).execute()
+
+    async def update_range(self, rng: str, values: list[list]) -> None:
+        await asyncio.to_thread(self._update_sync, rng, values)

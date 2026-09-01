@@ -24,15 +24,20 @@ def main():
             print(f"  !! header mismatch\n     want: {TABS[tab]}\n     got : {header}")
             ok = False
         for r in data:
-            cells = dict(zip(header, r))
+            # Appended rows can be shorter than the header; pad so trailing
+            # columns are present-but-empty rather than missing.
+            padded = list(r) + [""] * (len(header) - len(r))
+            cells = dict(zip(header, padded))
             if tab == "Properties":
                 media = cells.get("media_folder") or "(no media)"
                 print(f"  {cells['property_id']}  {cells['name']:<24} "
                       f"{cells['property_type']:<6} Rs {int(cells['price_inr']):>10,}  "
                       f"{cells['locality']:<28} {media}")
             elif tab == "Leads":
-                print(f"  {cells['lead_id']}  {cells['name']:<14} {cells['status']:<6} "
-                      f"{cells['deep_link']}")
+                phone = cells.get("phone", "") or "-"
+                link = cells.get("deep_link", "") or "(self-identified)"
+                print(f"  {cells['lead_id']:<12} {cells['name']:<14} {phone:<15} "
+                      f"{cells['status']:<6} {link}")
             else:
                 print("  " + " | ".join(r))
         if not data:

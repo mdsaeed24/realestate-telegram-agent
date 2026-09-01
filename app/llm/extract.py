@@ -8,13 +8,13 @@ import json
 from dataclasses import dataclass
 
 from app.config import Settings
-from app.domain.slots import parse_budget, parse_type
+from app.domain.slots import looks_like_name, parse_budget, parse_phone, parse_type
 from app.llm.client import text_of
 
 INTENTS = (
     "still_looking", "not_looking", "gave_requirements", "picked_property",
     "wants_more_photos", "wants_video", "wants_booking", "gave_slot",
-    "asked_question", "other",
+    "asked_question", "not_the_lead", "gave_contact", "other",
 )
 
 SCHEMA = {
@@ -31,6 +31,10 @@ SCHEMA = {
                             "description": "listing number or name if they picked one"},
         "slot_text": {"type": ["string", "null"]},
         "question": {"type": ["string", "null"]},
+        "person_name": {"type": ["string", "null"],
+                        "description": "their own name, if they state it"},
+        "phone": {"type": ["string", "null"],
+                  "description": "a phone number exactly as they wrote it"},
     },
     "required": ["intent", "language"],
     "additionalProperties": False,
@@ -49,6 +53,14 @@ majority of words.
 budget_text: copy the lead's own wording ("around 2 cr", "80 lakhs"). Do not \
 convert it to a number.
 
+not_the_lead: use this when they say they are not the person we addressed, or \
+that they are someone else, or that we have the wrong number.
+
+gave_contact: use this when they give their own name or phone number.
+
+person_name: only a name they state about themselves. Never copy the name we \
+greeted them with.
+
 Never invent a property name. reply_reference is only what the lead actually said."""
 
 
@@ -62,6 +74,8 @@ class Extraction:
     reply_reference: str | None = None
     slot_text: str | None = None
     question: str | None = None
+    person_name: str | None = None
+    phone: str | None = None
 
 
 async def extract(client, settings: Settings, message: str, context: str = "") -> Extraction:
@@ -75,8 +89,10 @@ async def extract(client, settings: Settings, message: str, context: str = "") -
     )
     data = json.loads(text_of(response))
 
-    # Budget is re-parsed in Python; the model only reports the wording.
+    # Budget and phone are re-parsed in Python; the model only reports wording.
     budget_text = data.get("budget_text")
+    raw_phone = data.get("phone")
+    name = (data.get("person_name") or "").strip() or None
     return Extraction(
         intent=data.get("intent", "other"),
         language=data.get("language", "en"),
@@ -86,4 +102,6 @@ async def extract(client, settings: Settings, message: str, context: str = "") -
         reply_reference=data.get("reply_reference"),
         slot_text=data.get("slot_text"),
         question=data.get("question"),
+        person_name=name if (name and looks_like_name(name)) else None,
+        phone=parse_phone(raw_phone or "") or parse_phone(message),
     )

@@ -7,10 +7,11 @@ no I/O and never calls the model. app/conversation.py executes the plan.
 from dataclasses import dataclass, field
 
 from app.domain import matching, resolve
-from app.domain.slots import format_inr
+from app.domain.slots import format_inr, parse_phone
 from app.sheets.properties import Property
 
 NEW = "NEW"
+IDENTIFYING = "IDENTIFYING"
 GREETED = "GREETED"
 QUALIFYING = "QUALIFYING"
 LISTED = "LISTED"
@@ -27,6 +28,9 @@ TERMINAL = (NOT_LOOKING,)
 @dataclass
 class Plan:
     stage: str
+    capture_name: str | None = None
+    capture_phone: str | None = None
+    new_lead: bool = False
     instruction: str = ""
     facts: str = ""
     silent: bool = False
@@ -84,6 +88,22 @@ def decide(state, ex, properties: list[Property], shown: list[Property]) -> Plan
 
     if state.opted_out or state.stage in TERMINAL:
         return Plan(stage=state.stage, silent=True)
+
+    # Someone who is not the lead we addressed. Until we know who they are,
+    # nothing may be recorded against the lead named in the deep link.
+    if ex.intent == "not_the_lead" and state.stage != IDENTIFYING:
+        return Plan(
+            stage=IDENTIFYING,
+            new_lead=True,
+            instruction=(
+                "Apologise briefly for using the wrong name. Say you would still be glad "
+                "to help, and ask for their name and mobile number so you can set them up "
+                "properly. One short message, ask for both together."
+            ),
+        )
+
+    if state.stage == IDENTIFYING:
+        return _identify(state, ex)
 
     if ex.intent == "not_looking":
         return Plan(
@@ -247,6 +267,51 @@ def decide(state, ex, properties: list[Property], shown: list[Property]) -> Plan
             "Do not push and do not repeat the pitch."
         ),
         facts=matching.numbered_list(result.alternatives),
+    )
+
+
+def _identify(state, ex) -> Plan:
+    """Collect a name and mobile before doing anything else for this person."""
+    have_name = state.slots.get("captured_name") or ex.person_name
+    # Normalise here too: the stage machine must not depend on the caller having
+    # already cleaned the value.
+    raw_phone = state.slots.get("captured_phone") or ex.phone
+    have_phone = parse_phone(raw_phone or "") or (raw_phone if raw_phone else None)
+
+    if have_name and have_phone:
+        return Plan(
+            stage=QUALIFYING,
+            capture_name=have_name,
+            capture_phone=have_phone,
+            instruction=(
+                "Thank them and confirm you have their details. Then ask what kind of "
+                "property they want, what budget, and which area - in one natural message."
+            ),
+            facts=f"Their name: {have_name}\nTheir number: {have_phone}",
+        )
+
+    if have_name and not have_phone:
+        return Plan(
+            stage=IDENTIFYING,
+            capture_name=have_name,
+            instruction=(f"Thank them, {have_name}. Ask for their mobile number so the "
+                         "team can reach them. One short line."),
+            facts=f"Their name: {have_name}",
+        )
+
+    if have_phone and not have_name:
+        return Plan(
+            stage=IDENTIFYING,
+            capture_phone=have_phone,
+            instruction="Thank them and ask for their name. One short line.",
+            facts=f"Their number: {have_phone}",
+        )
+
+    return Plan(
+        stage=IDENTIFYING,
+        instruction=("Ask again, politely and briefly, for their name and mobile number. "
+                     "Explain in a few words that you need it to set them up. Do not ask "
+                     "anything else and do not show any properties yet."),
     )
 
 

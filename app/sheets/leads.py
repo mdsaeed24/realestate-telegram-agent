@@ -34,3 +34,24 @@ async def by_id(sheets: Sheets, lead_id: str) -> Lead | None:
         if row.get("lead_id", "").strip() == lead_id:
             return parse(row)
     return None
+
+
+HEADERS = ["lead_id", "name", "phone", "source", "enquired_about", "status", "deep_link"]
+
+
+async def append(sheets: Sheets, lead: Lead) -> None:
+    """Add a self-identified lead so the client sees them in the sheet."""
+    await sheets.append(TAB, [
+        lead.lead_id, lead.name, lead.phone, lead.source,
+        lead.enquired_about, lead.status, lead.deep_link,
+    ])
+
+
+async def update_contact(sheets: Sheets, lead_id: str, name: str, phone: str) -> None:
+    """Fill in name/phone on an existing row once the person tells us."""
+    rows = await sheets.read(TAB)
+    for i, row in enumerate(rows, start=2):   # row 1 is the header
+        if row.get("lead_id", "").strip() == lead_id:
+            values = [[name, phone]]
+            await sheets.update_range(f"{TAB}!B{i}:C{i}", values)
+            return
