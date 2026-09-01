@@ -86,10 +86,11 @@ async def upsert(store: Store, state: LeadState) -> None:
 
 
 async def log_message(store: Store, lead_id: str, direction: str, body: str,
-                      telegram_message_id: int | None = None) -> None:
+                      telegram_message_id: int | None = None,
+                      session_ref: str | None = None) -> None:
     await store.insert("messages", {
         "lead_id": lead_id, "direction": direction, "body": body,
-        "telegram_message_id": telegram_message_id,
+        "telegram_message_id": telegram_message_id, "session_ref": session_ref,
     })
 
 

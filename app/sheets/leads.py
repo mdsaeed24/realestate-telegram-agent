@@ -55,3 +55,15 @@ async def update_contact(sheets: Sheets, lead_id: str, name: str, phone: str) ->
             values = [[name, phone]]
             await sheets.update_range(f"{TAB}!B{i}:C{i}", values)
             return
+
+
+async def remove(sheets: Sheets, lead_id: str) -> None:
+    """Drop a provisional row once the person turns out to be an existing lead."""
+    rows = await sheets.read(TAB)
+    keep = [r for r in rows if r.get("lead_id", "").strip() != lead_id]
+    if len(keep) == len(rows):
+        return
+    await sheets.clear(f"{TAB}!A2:Z1000")
+    if keep:
+        await sheets.update_range(
+            f"{TAB}!A2", [[r.get(h, "") for h in HEADERS] for r in keep])

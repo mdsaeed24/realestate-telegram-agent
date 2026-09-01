@@ -65,3 +65,10 @@ class Sheets:
 
     async def update_range(self, rng: str, values: list[list]) -> None:
         await asyncio.to_thread(self._update_sync, rng, values)
+
+    def _clear_sync(self, rng: str) -> None:
+        _service(self._path).spreadsheets().values().clear(
+            spreadsheetId=self._sheet_id, range=rng, body={}).execute()
+
+    async def clear(self, rng: str) -> None:
+        await asyncio.to_thread(self._clear_sync, rng)

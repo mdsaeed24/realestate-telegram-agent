@@ -17,6 +17,7 @@ from app.media import sender
 from app.sheets import bookings as sheet_bookings
 from app.sheets import leads as sheet_leads
 from app.sheets import properties as sheet_properties
+from app.store import sessions
 from app.store import state as state_store
 
 log = logging.getLogger("agent.conversation")
@@ -26,66 +27,62 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _send_and_log(ctx, chat_id: int, lead_id: str, text: str) -> None:
+async def _send_and_log(ctx, chat_id: int, lead_id: str, text: str,
+                        session_ref: str | None = None) -> None:
     result = await ctx.telegram.send_message(chat_id, text)
     await state_store.log_message(ctx.store, lead_id, "out", text,
-                                  result.get("message_id"))
+                                  result.get("message_id"), session_ref)
 
 
 async def start(ctx, chat_id: int, token: str) -> None:
-    """Handle /start <token> from a per-lead deep link."""
-    rows = await ctx.store.select("deep_link_tokens",
-                                  {"token": f"eq.{token}", "select": "lead_id,used_at"})
-    if not rows:
-        log.warning("unknown deep-link token")
-        await ctx.telegram.send_message(
-            chat_id, "This link isn't valid. Please use the link we sent you.")
-        return
+    """Handle /start <token>.
 
-    lead_id = rows[0]["lead_id"]
-    lead = await sheet_leads.by_id(ctx.sheets, lead_id)
-    if lead is None:
-        log.error("token %s maps to lead %s which is not in the sheet", token, lead_id)
-        return
+    The deep link tells us who we EXPECT, never who is actually there - links get
+    forwarded, phones get shared, and assuming identity attributed one person's
+    site visit to another. So every conversation opens by asking for a name.
+    """
+    expected_lead = None
+    if token:
+        rows = await ctx.store.select("deep_link_tokens",
+                                      {"token": f"eq.{token}", "select": "lead_id,used_at"})
+        if rows:
+            expected_lead = await sheet_leads.by_id(ctx.sheets, rows[0]["lead_id"])
+            await ctx.store.patch("deep_link_tokens", {"token": f"eq.{token}"},
+                                  {"used_at": _now()})
 
-    existing = await state_store.by_lead_id(ctx.store, lead_id)
-    if existing and existing.opted_out:
-        log.info("lead %s opted out, not re-engaging", lead_id)
-        return
+    session_ref = await sessions.open_session(
+        ctx.store, chat_id, expected_lead.lead_id if expected_lead else None)
 
-    st = existing or state_store.LeadState(lead_id=lead_id)
-    st.chat_id = chat_id
+    # Park the chat on a provisional lead until they tell us who they are.
+    st = await state_store.by_chat_id(ctx.store, chat_id)
+    if st is None or st.stage != stages.IDENTIFYING:
+        st = await _new_lead(ctx, chat_id, source="telegram-deeplink" if expected_lead
+                             else "telegram-direct")
+    st.slots["session_ref"] = session_ref
+    if expected_lead:
+        st.slots["expected_lead_id"] = expected_lead.lead_id
+        st.slots["expected_lead_name"] = expected_lead.name
     st.last_inbound_at = _now()
-
-    if existing and existing.stage not in (stages.NEW, stages.GREETED):
-        # A returning lead: restore, but re-confirm what we have on file.
-        text = await composer.compose(
-            ctx.llm, ctx.settings, language=st.language or "en",
-            instruction=("They are back after a break. Welcome them back briefly and "
-                         "re-confirm in one line whether the requirement below is still "
-                         "right, before carrying on."),
-            facts=_slot_facts(st, lead.name),
-        )
-    else:
-        plan = stages.greet(lead.name, lead.enquired_about)
-        st.stage = plan.stage
-        text = await composer.compose(
-            ctx.llm, ctx.settings, language=st.language or "en",
-            instruction=plan.instruction, facts=plan.facts,
-        )
-
     await state_store.upsert(ctx.store, st)
-    await _send_and_log(ctx, chat_id, lead_id, text)
-    await ctx.store.patch("deep_link_tokens", {"token": f"eq.{token}"}, {"used_at": _now()})
+
+    text = await composer.compose(
+        ctx.llm, ctx.settings, language="en",
+        instruction=("Introduce yourself briefly as being from the property team, say you "
+                     "can help them find a place, and ask who you are speaking with - "
+                     "their name and mobile number. Do NOT use any name yourself. One "
+                     "short message."),
+        facts="",
+    )
+    await _send_and_log(ctx, chat_id, st.lead_id, text, session_ref)
 
 
 async def _new_lead(ctx, chat_id: int, source: str) -> "state_store.LeadState":
-    """Mint a lead for someone we have never seen, and put them in the sheet so
-    the client can see them."""
+    """Mint a provisional lead for a chat, and put it in the sheet so the client
+    sees the enquiry even if the person never finishes identifying."""
     lead_id = f"LEAD-{uuid.uuid4().hex[:6].upper()}"
 
-    # chat_id is unique: release it from whatever lead held it, so the old lead's
-    # history stays intact but this chat no longer resolves to them.
+    # chat_id is unique: release it from whatever lead held it, so the previous
+    # lead's history stays intact but this chat no longer resolves to them.
     await ctx.store.patch("leads_state", {"chat_id": f"eq.{chat_id}"}, {"chat_id": None})
 
     st = state_store.LeadState(lead_id=lead_id, chat_id=chat_id,
@@ -95,20 +92,60 @@ async def _new_lead(ctx, chat_id: int, source: str) -> "state_store.LeadState":
         lead_id=lead_id, name="", phone="", source=source,
         enquired_about="", status="new", deep_link="",
     ))
-    log.info("created lead %s from %s", lead_id, source)
+    log.info("created provisional lead %s from %s", lead_id, source)
     return st
 
 
+def names_match(claimed: str, expected: str) -> bool:
+    """Is the name they gave the person the deep link named?
+
+    Deliberately loose - "Anita" for "Anita Rao" is the same person - but a
+    different name is a different person, and must not inherit their record.
+    """
+    if not claimed or not expected:
+        return False
+    c = {w for w in claimed.lower().replace(".", " ").split() if len(w) > 1}
+    e = {w for w in expected.lower().replace(".", " ").split() if len(w) > 1}
+    return bool(c & e)
+
+
 async def _capture_contact(ctx, st, plan) -> None:
-    """Persist a name/number the person gave us, to Supabase and the sheet."""
+    """Persist the name/number given, and resolve which lead this actually is."""
     if plan.capture_name:
         st.slots["captured_name"] = plan.capture_name
     if plan.capture_phone:
         st.slots["captured_phone"] = plan.capture_phone
-    if plan.capture_name and plan.capture_phone:
-        await sheet_leads.update_contact(
-            ctx.sheets, st.lead_id, plan.capture_name, plan.capture_phone)
-        log.info("captured contact for %s", st.lead_id)
+    if not (plan.capture_name and plan.capture_phone):
+        return
+
+    name, phone = plan.capture_name, plan.capture_phone
+    session_ref = st.slots.get("session_ref")
+    expected_id = st.slots.get("expected_lead_id")
+    expected_name = st.slots.get("expected_lead_name")
+
+    if expected_id and names_match(name, expected_name or ""):
+        # The link reached the right person: adopt their existing lead record so
+        # their enquiry history and status stay attached to them.
+        match = "matched"
+        provisional = st.lead_id
+        if provisional != expected_id:
+            await ctx.store.patch("leads_state", {"chat_id": f"eq.{st.chat_id}"},
+                                  {"chat_id": None})
+            st.lead_id = expected_id
+            await state_store.upsert(ctx.store, st)
+            await ctx.store._client.delete(
+                f"{ctx.store._base}/leads_state",
+                params={"lead_id": f"eq.{provisional}"}, headers=ctx.store._headers)
+            await sheet_leads.remove(ctx.sheets, provisional)
+        log.info("session %s: %s confirmed as %s", session_ref, name, expected_id)
+    else:
+        match = "different" if expected_id else "unknown"
+        log.info("session %s: %s is a new client (%s)", session_ref, name, match)
+
+    await sheet_leads.update_contact(ctx.sheets, st.lead_id, name, phone)
+    if session_ref:
+        await sessions.record_identity(ctx.store, session_ref, lead_id=st.lead_id,
+                                       name=name, phone=phone, match=match)
 
 
 def _slot_facts(st, name: str) -> str:
@@ -143,7 +180,9 @@ async def message(ctx, chat_id: int, text: str, telegram_message_id: int | None)
         log.info("lead %s opted out, ignoring inbound", st.lead_id)
         return
 
-    await state_store.log_message(ctx.store, st.lead_id, "in", text, telegram_message_id)
+    session_ref = st.slots.get("session_ref")
+    await state_store.log_message(ctx.store, st.lead_id, "in", text,
+                                  telegram_message_id, session_ref)
     st.last_inbound_at = _now()
     st.nudged_at = None  # they replied, so the nudge budget resets
 
@@ -209,7 +248,9 @@ async def message(ctx, chat_id: int, text: str, telegram_message_id: int | None)
     if plan.send_hero is not None:
         await sender.send_hero(ctx.telegram, ctx.store, ctx.settings.supabase_url,
                                chat_id, st.lead_id, plan.send_hero)
-    await _send_and_log(ctx, chat_id, st.lead_id, reply)
+    await _send_and_log(ctx, chat_id, st.lead_id, reply, st.slots.get("session_ref"))
+    if st.slots.get("session_ref"):
+        await sessions.touch(ctx.store, st.slots["session_ref"], outcome=st.stage)
 
     if plan.send_gallery is not None:
         await sender.send_gallery(ctx.telegram, ctx.store, ctx.settings.supabase_url,
