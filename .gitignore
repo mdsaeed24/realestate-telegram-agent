@@ -4,9 +4,20 @@ __pycache__/
 *.pyc
 .DS_Store
 *.log
-credentials.json
-credentials.txt
+# Case variants matter: this only matched "Credentials.json" because macOS sets
+# core.ignorecase. On Linux or CI it would not, and the key would be committable.
+[Cc]redentials.json
+[Cc]redentials.txt
+*[Cc]redentials*.json
+service-account*.json
 
 # Local backups of secret files
 .env.*
 !.env.example
+
+# Property photos live in Supabase storage, not in the repo
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.avif
